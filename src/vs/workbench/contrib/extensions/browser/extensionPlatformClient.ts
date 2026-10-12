@@ -37,8 +37,14 @@ export interface IExtensionManifestSummary {
 }
 
 export interface IExtensionPlatformBootstrap {
-  transport: IExtensionTransportInfo;
-  runtime: INodeRuntimeInfo;
+  /**
+   * `null` when the platform is dormant: no installed extension has a Node entry
+   * point, so the extension host was not started (see `dormant`).
+   */
+  transport: IExtensionTransportInfo | null;
+  /** True when the extension host was intentionally left unstarted. */
+  dormant?: boolean;
+  runtime: INodeRuntimeInfo | null;
   paths: IExtensionPathsInfo;
   sessionKind: string;
   extensions: IExtensionManifestSummary[];

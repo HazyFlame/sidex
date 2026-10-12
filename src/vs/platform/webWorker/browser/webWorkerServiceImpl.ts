@@ -52,22 +52,10 @@ export class WebWorkerService implements IWebWorkerService {
 	}
 
 	getWorkerUrl(descriptor: WebWorkerDescriptor): string {
-		const isTauriProduction =
-			(globalThis as typeof globalThis & { __SIDEX_TAURI__?: boolean }).__SIDEX_TAURI__ === true &&
-			globalThis.location?.protocol === 'tauri:';
-		if (isTauriProduction) {
-			if (descriptor.label === 'editorWorkerService') {
-				return `${globalThis.location.origin}/assets/editorWorker.js`;
-			}
-			if (descriptor.label === 'TextMateWorker') {
-				return `${globalThis.location.origin}/assets/textMateWorker.js`;
-			}
-			if (descriptor.label === 'extensionHostWorkerMain') {
-				return `${globalThis.location.origin}/assets/extensionHostWorker.js`;
-			}
-		}
-
-		// Prefer bundler location for Vite/Webpack compatibility
+		// Worker entries are compiled into standalone bundles by
+		// `vite.workers.config.ts` and the emitted URL is baked into
+		// `esmModuleLocationBundler` by `workerBundleUrl()`, so it is correct in dev
+		// and in packaged builds alike. No environment specific rewriting is needed.
 		if (descriptor.esmModuleLocationBundler) {
 			const url =
 				typeof descriptor.esmModuleLocationBundler === 'function'

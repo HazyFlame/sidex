@@ -193,6 +193,16 @@ class AMDModuleImporter {
 const cache = new Map<string, Promise<any>>();
 
 /**
+ * Root the AMD modules loaded at runtime are served from.
+ *
+ * Packaged builds ship them in `dist/vendor` instead of `dist/node_modules`
+ * (see `scripts/postbuild.js`): Tauri refuses a `frontendDist` that contains a
+ * `node_modules` folder. In dev the Vite dev server serves the real project
+ * `node_modules` directory, so the original path is kept there.
+ */
+const runtimeNodeModulesPath: AppResourcePath = import.meta.env.PROD ? 'vs/../../vendor' : nodeModulesPath;
+
+/**
  * Utility for importing an AMD node module. This util supports AMD and ESM contexts and should be used while the ESM adoption
  * is on its way.
  *
@@ -219,7 +229,7 @@ export async function importAMDNodeModule<T>(
 		scriptSrc = nodeModulePath;
 	} else {
 		const useASAR = canASAR && isBuilt && !platform.isWeb;
-		const actualNodeModulesPath = useASAR ? nodeModulesAsarPath : nodeModulesPath;
+		const actualNodeModulesPath = useASAR ? nodeModulesAsarPath : runtimeNodeModulesPath;
 		const resourcePath: AppResourcePath = `${actualNodeModulesPath}/${nodeModulePath}`;
 		scriptSrc = FileAccess.asBrowserUri(resourcePath).toString(true);
 	}
@@ -234,7 +244,7 @@ export function resolveAmdNodeModulePath(nodeModuleName: string, pathInsideNodeM
 	const useASAR = canASAR && isBuilt && !platform.isWeb;
 
 	const nodeModulePath = `${nodeModuleName}/${pathInsideNodeModule}`;
-	const actualNodeModulesPath = useASAR ? nodeModulesAsarPath : nodeModulesPath;
+	const actualNodeModulesPath = useASAR ? nodeModulesAsarPath : runtimeNodeModulesPath;
 	const resourcePath: AppResourcePath = `${actualNodeModulesPath}/${nodeModulePath}`;
 	return FileAccess.asBrowserUri(resourcePath).toString(true);
 }

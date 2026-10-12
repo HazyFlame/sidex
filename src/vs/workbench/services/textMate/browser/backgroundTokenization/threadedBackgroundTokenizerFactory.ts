@@ -17,6 +17,7 @@ import { URI, UriComponents } from '../../../../../base/common/uri.js';
 import { IBackgroundTokenizationStore, IBackgroundTokenizer } from '../../../../../editor/common/languages.js';
 import { ILanguageService } from '../../../../../editor/common/languages/language.js';
 import { ITextModel } from '../../../../../editor/common/model.js';
+import { workerBundleUrl } from '../../../../../platform/webWorker/browser/workerBundleUrl.js';
 import { IConfigurationService } from '../../../../../platform/configuration/common/configuration.js';
 import { IEnvironmentService } from '../../../../../platform/environment/common/environment.js';
 import { IExtensionResourceLoaderService } from '../../../../../platform/extensionResourceLoader/common/extensionResourceLoader.js';
@@ -189,7 +190,11 @@ export class ThreadedBackgroundTokenizerFactory implements IDisposable {
 				esmModuleLocation: FileAccess.asBrowserUri(
 					'vs/workbench/services/textMate/browser/backgroundTokenization/worker/textMateTokenizationWorker.workerMain.js'
 				),
-				esmModuleLocationBundler: new URL('./worker/textMateTokenizationWorker.workerMain.ts', import.meta.url),
+				esmModuleLocationBundler: workerBundleUrl(
+					import.meta.url,
+					'./worker/textMateTokenizationWorker.workerMain.ts',
+					'/workers/textMateWorker.js'
+				),
 				label: 'TextMateWorker'
 			})
 		));

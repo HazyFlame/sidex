@@ -42,6 +42,7 @@ import { EditorWorkerHost } from '../../common/services/editorWorkerHost.js';
 import { StringEdit } from '../../common/core/edits/stringEdit.js';
 import { OffsetRange } from '../../common/core/ranges/offsetRange.js';
 import { FileAccess } from '../../../base/common/network.js';
+import { workerBundleUrl } from '../../../platform/webWorker/browser/workerBundleUrl.js';
 
 /**
  * Stop the worker if it was not needed for 5 min.
@@ -64,7 +65,11 @@ export class EditorWorkerService extends Disposable implements IEditorWorkerServ
 
 	public static readonly workerDescriptor = new WebWorkerDescriptor({
 		esmModuleLocation: () => FileAccess.asBrowserUri('vs/editor/common/services/editorWebWorkerMain.js'),
-		esmModuleLocationBundler: new URL('../../common/services/editorWebWorkerMain.ts', import.meta.url),
+		esmModuleLocationBundler: workerBundleUrl(
+			import.meta.url,
+			'../../common/services/editorWebWorkerMain.ts',
+			'/workers/editorWorker.js'
+		),
 		label: 'editorWorkerService'
 	});
 

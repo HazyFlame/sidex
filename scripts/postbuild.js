@@ -36,6 +36,31 @@ if (fs.existsSync('extensions-meta.json')) {
 }
 console.log('Post-build: copied extensions\n');
 
+// Copy node modules that are loaded at runtime via `importAMDNodeModule()`
+// (see src/vs/amdX.ts). Those modules are addressed as
+// `<origin>/vendor/<name>/<path>` in packaged builds: they have to exist in
+// `dist` for those builds, and they cannot live in a `node_modules` folder
+// because Tauri rejects a `frontendDist` that contains one. In dev the Vite dev
+// server serves them from the project `node_modules` directory.
+const RUNTIME_NODE_MODULES = [
+  ['@vscode/iconv-lite-umd', 'lib/iconv-lite-umd.js'], // text file encoding (BOM, UTF-16, legacy charsets)
+  ['jschardet', 'dist/jschardet.min.js'] // encoding detection
+];
+
+for (const [nodeModuleName, relativePath] of RUNTIME_NODE_MODULES) {
+  const source = path.join('node_modules', nodeModuleName, relativePath);
+  if (!fs.existsSync(source)) {
+    console.warn(`Post-build: missing runtime node module ${source}, skipping`);
+    continue;
+  }
+
+  const target = path.join(DIST_DIR, 'vendor', nodeModuleName, relativePath);
+  fs.mkdirSync(path.dirname(target), { recursive: true });
+  fs.copyFileSync(source, target);
+  console.log(`Post-build: copied ${source} -> ${target}`);
+}
+console.log('');
+
 // Calculate bundle sizes
 const js = getFileSizes(ASSETS_DIR, '.js');
 const css = getFileSizes(ASSETS_DIR, '.css');

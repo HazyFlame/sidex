@@ -173,7 +173,6 @@ impl SearchEngine {
             .or(query.max_results)
             .unwrap_or(DEFAULT_MAX_RESULTS);
         let max_file_size = options.max_file_size.unwrap_or(DEFAULT_MAX_FILE_SIZE);
-        let files = collect_files_with_options(root, options, max_file_size);
 
         let use_literal = !query.is_regex && query.case_sensitive && !query.whole_word;
 
@@ -201,89 +200,106 @@ impl SearchEngine {
             )
         };
 
-        let hit_count = Arc::new(AtomicUsize::new(0));
-        let done = Arc::new(AtomicBool::new(false));
-
-        let batches: Vec<Vec<SearchResult>> = files
-            .par_iter()
-            .filter_map(|path| {
-                if done.load(Ordering::Relaxed) {
-                    return None;
-                }
-
-                let content = read_file_lossy(path)?;
-                let path_buf = path.clone();
-                let mut local = Vec::new();
-
-                if let Some(ref finder) = literal_finder {
-                    for (line_idx, line) in content.lines().enumerate() {
-                        let bytes = line.as_bytes();
-                        let mut start = 0;
-                        while let Some(pos) = finder.find(&bytes[start..]) {
-                            let result = SearchResult {
-                                path: path_buf.clone(),
-                                line_number: line_idx + 1,
-                                line_text: line.to_string(),
-                                match_start: start + pos,
-                                match_end: start + pos + query.pattern.len(),
-                            };
-                            if let Some(ref cb) = progress {
-                                cb(&result);
-                            }
-                            local.push(result);
-                            start += pos + 1;
-                            if hit_count.load(Ordering::Relaxed) + local.len() >= max_results {
-                                break;
-                            }
-                        }
-                        if hit_count.load(Ordering::Relaxed) + local.len() >= max_results {
-                            break;
-                        }
-                    }
-                } else if let Some(ref re) = re {
-                    for (line_idx, line) in content.lines().enumerate() {
-                        for m in re.find_iter(line) {
-                            let result = SearchResult {
-                                path: path_buf.clone(),
-                                line_number: line_idx + 1,
-                                line_text: line.to_string(),
-                                match_start: m.start(),
-                                match_end: m.end(),
-                            };
-                            if let Some(ref cb) = progress {
-                                cb(&result);
-                            }
-                            local.push(result);
-                            if hit_count.load(Ordering::Relaxed) + local.len() >= max_results {
-                                break;
-                            }
-                        }
-                        if hit_count.load(Ordering::Relaxed) + local.len() >= max_results {
-                            break;
-                        }
-                    }
-                }
-
-                if local.is_empty() {
-                    None
-                } else {
-                    let prev = hit_count.fetch_add(local.len(), Ordering::Relaxed);
-                    if prev + local.len() >= max_results {
-                        done.store(true, Ordering::Relaxed);
-                        local.truncate(max_results.saturating_sub(prev));
-                    }
-                    Some(local)
-                }
-            })
-            .collect();
-
         let mut results = Vec::with_capacity(max_results);
-        for batch in batches {
-            let remaining = max_results.saturating_sub(results.len());
-            if remaining == 0 {
+        let mut file_batches = FileBatches {
+            files: Box::new(searchable_files(root, options, max_file_size)),
+            batch_size: SEARCH_FILE_BATCH_SIZE,
+        };
+
+        // Consume the tree in batches, matching each batch in parallel, and stop
+        // as soon as `max_results` is reached. Collecting every file of a large
+        // repository first (and opening each one for the binary check) meant a
+        // common query walked — and read — the whole tree before returning
+        // anything, which made Ctrl+Shift+F look like it hung. v0.1.2 stopped at
+        // the cap and felt instant.
+        while results.len() < max_results {
+            let Some(files) = file_batches.next() else {
                 break;
+            };
+
+            let hit_count = Arc::new(AtomicUsize::new(0));
+            let done = Arc::new(AtomicBool::new(false));
+
+            let batches: Vec<Vec<SearchResult>> = files
+                .par_iter()
+                .filter_map(|path| {
+                    if done.load(Ordering::Relaxed) {
+                        return None;
+                    }
+
+                    let content = read_text_lossy(path)?;
+                    let path_buf = path.clone();
+                    let mut local = Vec::new();
+
+                    if let Some(ref finder) = literal_finder {
+                        for (line_idx, line) in content.lines().enumerate() {
+                            let bytes = line.as_bytes();
+                            let mut start = 0;
+                            while let Some(pos) = finder.find(&bytes[start..]) {
+                                let result = SearchResult {
+                                    path: path_buf.clone(),
+                                    line_number: line_idx + 1,
+                                    line_text: line.to_string(),
+                                    match_start: start + pos,
+                                    match_end: start + pos + query.pattern.len(),
+                                };
+                                if let Some(ref cb) = progress {
+                                    cb(&result);
+                                }
+                                local.push(result);
+                                start += pos + 1;
+                                if hit_count.load(Ordering::Relaxed) + local.len() >= max_results {
+                                    break;
+                                }
+                            }
+                            if hit_count.load(Ordering::Relaxed) + local.len() >= max_results {
+                                break;
+                            }
+                        }
+                    } else if let Some(ref re) = re {
+                        for (line_idx, line) in content.lines().enumerate() {
+                            for m in re.find_iter(line) {
+                                let result = SearchResult {
+                                    path: path_buf.clone(),
+                                    line_number: line_idx + 1,
+                                    line_text: line.to_string(),
+                                    match_start: m.start(),
+                                    match_end: m.end(),
+                                };
+                                if let Some(ref cb) = progress {
+                                    cb(&result);
+                                }
+                                local.push(result);
+                                if hit_count.load(Ordering::Relaxed) + local.len() >= max_results {
+                                    break;
+                                }
+                            }
+                            if hit_count.load(Ordering::Relaxed) + local.len() >= max_results {
+                                break;
+                            }
+                        }
+                    }
+
+                    if local.is_empty() {
+                        None
+                    } else {
+                        let prev = hit_count.fetch_add(local.len(), Ordering::Relaxed);
+                        if prev + local.len() >= max_results {
+                            done.store(true, Ordering::Relaxed);
+                            local.truncate(max_results.saturating_sub(prev));
+                        }
+                        Some(local)
+                    }
+                })
+                .collect();
+
+            for batch in batches {
+                let remaining = max_results.saturating_sub(results.len());
+                if remaining == 0 {
+                    break;
+                }
+                results.extend(batch.into_iter().take(remaining));
             }
-            results.extend(batch.into_iter().take(remaining));
         }
 
         Ok(results)
@@ -492,10 +508,94 @@ fn case_insensitive_replace(text: &str, pattern: &str, replacement: &str) -> Str
     result
 }
 
-/// Read a file, falling back to lossy UTF-8 for non-UTF-8 content.
-fn read_file_lossy(path: &Path) -> Option<String> {
-    let bytes = fs::read(path).ok()?;
+/// Read a file once, falling back to lossy UTF-8 for non-UTF-8 content.
+///
+/// Returns `None` for binary content (a NUL byte in the first
+/// [`BINARY_CHECK_BYTES`]): callers must never match inside executables or
+/// archives. Probing before reading the rest keeps that check free for the
+/// files it rejects while still costing a single `open` for text files — the
+/// old code opened every file twice (once for `is_binary`, once to search).
+fn read_text_lossy(path: &Path) -> Option<String> {
+    let mut file = fs::File::open(path).ok()?;
+
+    let mut probe = [0u8; BINARY_CHECK_BYTES];
+    let read = file.read(&mut probe).ok()?;
+    if probe[..read].contains(&0) {
+        return None;
+    }
+
+    let mut bytes = Vec::with_capacity(64 * 1024);
+    bytes.extend_from_slice(&probe[..read]);
+    file.read_to_end(&mut bytes).ok()?;
+
     Some(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+/// Directories that are never worth walking: VCS metadata, build output and
+/// package caches. Without this the text search descends into `.git/`,
+/// `node_modules/`, `target/`, … and the walk dominates the query — v0.1.2
+/// pruned these (`ALWAYS_SKIP` in the old command layer) and searched large
+/// repositories instantly.
+fn should_prune_dir(entry: &ignore::DirEntry) -> bool {
+    entry.file_type().is_some_and(|ft| ft.is_dir())
+        && ALWAYS_SKIP_DIRS.contains(&entry.file_name().to_string_lossy().as_ref())
+}
+
+/// Stream the searchable files of a tree.
+///
+/// Lazy on purpose: a caller that caps its result count should consume this
+/// through [`FileBatches`] so it stops walking as soon as the cap is reached.
+fn searchable_files<'a>(
+    root: &'a Path,
+    options: &'a SearchOptions,
+    max_file_size: u64,
+) -> impl Iterator<Item = PathBuf> + 'a {
+    let include_set = build_search_globset(&options.include_patterns);
+    let exclude_set = build_search_globset(&options.exclude_patterns);
+
+    WalkBuilder::new(root)
+        .hidden(false)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .filter_entry(|entry| !should_prune_dir(entry))
+        .build()
+        .filter_map(std::result::Result::ok)
+        .filter_map(move |entry| {
+            if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+                return None;
+            }
+            if let Ok(meta) = entry.metadata() {
+                if meta.len() > max_file_size {
+                    return None;
+                }
+            }
+
+            let path = entry.into_path();
+
+            // Search box globs ("files to include/exclude") are written
+            // relative to the search root, so match both the absolute path and
+            // the root relative path — a pattern like `src/main/*` never
+            // matches an absolute Windows path otherwise.
+            let relative = path.strip_prefix(root).ok();
+
+            if let Some(ref inc) = include_set {
+                let matched =
+                    inc.is_match(&path) || relative.as_ref().is_some_and(|rel| inc.is_match(rel));
+                if !matched {
+                    return None;
+                }
+            }
+            if let Some(ref exc) = exclude_set {
+                let excluded =
+                    exc.is_match(&path) || relative.as_ref().is_some_and(|rel| exc.is_match(rel));
+                if excluded {
+                    return None;
+                }
+            }
+
+            Some(path)
+        })
 }
 
 /// Collect searchable files with extended options.
@@ -504,74 +604,64 @@ fn collect_files_with_options(
     options: &SearchOptions,
     max_file_size: u64,
 ) -> Vec<PathBuf> {
-    let include_set = build_search_globset(&options.include_patterns);
-    let exclude_set = build_search_globset(&options.exclude_patterns);
-
-    let mut files = Vec::new();
-
-    for result in WalkBuilder::new(root)
-        .hidden(false)
-        .git_ignore(true)
-        .git_global(true)
-        .git_exclude(true)
-        .build()
-    {
-        let Ok(entry) = result else { continue };
-
-        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
-            continue;
-        }
-
-        let path = entry.path();
-        if let Ok(meta) = entry.metadata() {
-            if meta.len() > max_file_size {
-                continue;
-            }
-        }
-
-        if let Some(ref inc) = include_set {
-            if !inc.is_match(path) {
-                continue;
-            }
-        }
-        if let Some(ref exc) = exclude_set {
-            if exc.is_match(path) {
-                continue;
-            }
-        }
-
-        if is_binary(path) {
-            continue;
-        }
-
-        files.push(path.to_path_buf());
-    }
-
-    files
+    searchable_files(root, options, max_file_size).collect()
 }
 
+/// How many files a streaming search hands to rayon at a time. Small enough
+/// that a query hitting `max_results` stops after a few dozen files instead of
+/// reading a whole directory's worth on a cold cache, large enough to keep every
+/// core busy.
+const SEARCH_FILE_BATCH_SIZE: usize = 64;
+
+/// Chunks of searchable files, produced lazily from the walk.
+struct FileBatches<'a> {
+    files: Box<dyn Iterator<Item = PathBuf> + 'a>,
+    batch_size: usize,
+}
+
+impl Iterator for FileBatches<'_> {
+    type Item = Vec<PathBuf>;
+
+    fn next(&mut self) -> Option<Vec<PathBuf>> {
+        let batch: Vec<PathBuf> = self.files.by_ref().take(self.batch_size).collect();
+        if batch.is_empty() {
+            None
+        } else {
+            Some(batch)
+        }
+    }
+}
+
+/// Build a glob set from user supplied patterns.
+///
+/// Returns `None` when there is nothing to filter on. Patterns that fail to
+/// parse are skipped: `globset` happily builds an empty `GlobSet`, which then
+/// rejects *every* path, so a single bad pattern (an empty string, a stray
+/// bracket typed into the search box, ...) used to make the whole search return
+/// zero results.
 fn build_search_globset(patterns: &[String]) -> Option<globset::GlobSet> {
     if patterns.is_empty() {
         return None;
     }
     let mut builder = globset::GlobSetBuilder::new();
+    let mut added = 0usize;
     for p in patterns {
-        if let Ok(g) = globset::Glob::new(p) {
-            builder.add(g);
+        let trimmed = p.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match globset::Glob::new(trimmed) {
+            Ok(g) => {
+                builder.add(g);
+                added += 1;
+            }
+            Err(_) => continue,
         }
     }
+    if added == 0 {
+        return None;
+    }
     builder.build().ok()
-}
-
-fn is_binary(path: &Path) -> bool {
-    let Ok(mut file) = fs::File::open(path) else {
-        return false;
-    };
-    let mut buf = [0u8; BINARY_CHECK_BYTES];
-    let Ok(n) = file.read(&mut buf) else {
-        return false;
-    };
-    buf[..n].contains(&0)
 }
 
 // ---------------------------------------------------------------------------
@@ -737,7 +827,7 @@ impl SearchEngine {
                     return None;
                 }
 
-                let content = read_file_lossy(path)?;
+                let content = read_text_lossy(path)?;
                 let path_buf = path.clone();
                 let mut local = Vec::new();
 
@@ -873,7 +963,7 @@ impl SearchEngine {
                     }
                 }
 
-                let content = read_file_lossy(path)?;
+                let content = read_text_lossy(path)?;
                 let path_buf = path.clone();
                 let mut local = Vec::new();
 
@@ -1169,13 +1259,16 @@ pub fn search_files(
 
         let path = entry.path();
 
+        let relative = path.strip_prefix(root).ok();
         if let Some(ref inc) = include_set {
-            if !inc.is_match(path) {
+            let matched = inc.is_match(path) || relative.is_some_and(|rel| inc.is_match(rel));
+            if !matched {
                 continue;
             }
         }
         if let Some(ref exc) = exclude_set {
-            if exc.is_match(path) {
+            let excluded = exc.is_match(path) || relative.is_some_and(|rel| exc.is_match(rel));
+            if excluded {
                 continue;
             }
         }
@@ -1475,9 +1568,17 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let path = tmp.path().join("latin1.txt");
         fs::write(&path, b"caf\xe9 needle").unwrap();
-        let content = read_file_lossy(&path);
+        let content = read_text_lossy(&path);
         assert!(content.is_some());
         assert!(content.unwrap().contains("needle"));
+    }
+
+    #[test]
+    fn read_text_lossy_rejects_binary() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("blob.bin");
+        fs::write(&path, b"\x7fELF\x02\x01\x00needle").unwrap();
+        assert!(read_text_lossy(&path).is_none());
     }
 
     #[test]

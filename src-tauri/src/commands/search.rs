@@ -44,69 +44,83 @@ pub struct SearchTextOptions {
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
-pub fn search_files(
+pub async fn search_files(
     root: String,
     pattern: String,
     options: Option<SearchFileOptions>,
 ) -> Result<Vec<FileMatch>, String> {
-    let crate_opts = options.map(|o| CrateFileSearchOptions {
-        max_results: o.max_results,
-        include_hidden: o.include_hidden,
-        include: o.include,
-        exclude: o.exclude,
-    });
+    // Walking a large workspace takes seconds; a synchronous command runs on
+    // the main thread and freezes the whole window while it does.
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<FileMatch>, String> {
+        let crate_opts = options.map(|o| CrateFileSearchOptions {
+            max_results: o.max_results,
+            include_hidden: o.include_hidden,
+            include: o.include,
+            exclude: o.exclude,
+        });
 
-    let matches = crate_search_files(Path::new(&root), &pattern, crate_opts.as_ref());
+        let matches = crate_search_files(Path::new(&root), &pattern, crate_opts.as_ref());
 
-    Ok(matches
-        .into_iter()
-        .map(|m| FileMatch {
-            path: m.path,
-            name: m.name,
-            score: m.score,
-        })
-        .collect())
+        Ok(matches
+            .into_iter()
+            .map(|m| FileMatch {
+                path: m.path,
+                name: m.name,
+                score: m.score,
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| format!("search task failed: {e}"))?
 }
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-pub fn search_text(
+pub async fn search_text(
     root: String,
     query: String,
     options: Option<SearchTextOptions>,
 ) -> Result<Vec<TextMatch>, String> {
-    let opts_ref = options.as_ref();
-    let query_len = query.len();
+    // A synchronous command runs on the main thread, so a text search over a
+    // large workspace froze the window (no repaint, no cancel, no progress) for
+    // as long as the walk took. Run it on a blocking thread instead.
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<TextMatch>, String> {
+        let opts_ref = options.as_ref();
+        let query_len = query.len();
 
-    let crate_query = CrateSearchQuery {
-        pattern: query,
-        is_regex: opts_ref.and_then(|o| o.is_regex).unwrap_or(false),
-        case_sensitive: opts_ref.and_then(|o| o.case_sensitive).unwrap_or(false),
-        whole_word: false,
-        max_results: opts_ref.and_then(|o| o.max_results),
-    };
+        let crate_query = CrateSearchQuery {
+            pattern: query,
+            is_regex: opts_ref.and_then(|o| o.is_regex).unwrap_or(false),
+            case_sensitive: opts_ref.and_then(|o| o.case_sensitive).unwrap_or(false),
+            whole_word: false,
+            max_results: opts_ref.and_then(|o| o.max_results),
+        };
 
-    let crate_opts = CrateSearchOptions {
-        include_patterns: opts_ref.and_then(|o| o.include.clone()).unwrap_or_default(),
-        exclude_patterns: opts_ref.and_then(|o| o.exclude.clone()).unwrap_or_default(),
-        max_results: opts_ref.and_then(|o| o.max_results),
-        max_file_size: opts_ref.and_then(|o| o.max_file_size),
-        context_lines: None,
-    };
+        let crate_opts = CrateSearchOptions {
+            include_patterns: opts_ref.and_then(|o| o.include.clone()).unwrap_or_default(),
+            exclude_patterns: opts_ref.and_then(|o| o.exclude.clone()).unwrap_or_default(),
+            max_results: opts_ref.and_then(|o| o.max_results),
+            max_file_size: opts_ref.and_then(|o| o.max_file_size),
+            context_lines: None,
+        };
 
-    let results = SearchEngine::search_with_options(Path::new(&root), &crate_query, &crate_opts)
-        .map_err(|e| e.to_string())?;
+        let results =
+            SearchEngine::search_with_options(Path::new(&root), &crate_query, &crate_opts)
+                .map_err(|e| e.to_string())?;
 
-    Ok(results
-        .into_iter()
-        .map(|r| TextMatch {
-            path: r.path.to_string_lossy().into_owned(),
-            line_number: r.line_number,
-            line_content: r.line_text,
-            column: r.match_start,
-            match_length: r.match_end.saturating_sub(r.match_start).max(query_len),
-        })
-        .collect())
+        Ok(results
+            .into_iter()
+            .map(|r| TextMatch {
+                path: r.path.to_string_lossy().into_owned(),
+                line_number: r.line_number,
+                line_content: r.line_text,
+                column: r.match_start,
+                match_length: r.match_end.saturating_sub(r.match_start).max(query_len),
+            })
+            .collect())
+    })
+    .await
+    .map_err(|e| format!("search task failed: {e}"))?
 }
 
 // ---------------------------------------------------------------------------

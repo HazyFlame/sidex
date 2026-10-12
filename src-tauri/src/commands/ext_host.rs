@@ -15,6 +15,23 @@ use tauri::AppHandle;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 
+/// Node heap ceiling for the extension host (`--max-old-space-size`, in MB).
+///
+/// The host is mostly a message pump: extension code runs in it, but language
+/// servers are spawned as their own child processes, so the default stays well
+/// below Node's own ceiling. Raise it with `SIDEX_EXT_HOST_HEAP_MB` for
+/// extension workloads that keep a lot of state in-process.
+const DEFAULT_EXT_HOST_HEAP_MB: u32 = 1024;
+const MIN_EXT_HOST_HEAP_MB: u32 = 256;
+
+fn extension_host_heap_mb() -> u32 {
+    std::env::var("SIDEX_EXT_HOST_HEAP_MB")
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok())
+        .filter(|value| *value >= MIN_EXT_HOST_HEAP_MB)
+        .unwrap_or(DEFAULT_EXT_HOST_HEAP_MB)
+}
+
 /// Strip the Windows `\\?\` prefix; Node's CJS resolver chokes on UNC paths.
 fn normalize_for_node(path: PathBuf) -> PathBuf {
     #[cfg(windows)]
@@ -266,9 +283,12 @@ fn spawn_host_process(
     std::fs::write(&init_data_file, &init_data_json)
         .map_err(|e| format!("failed to write init data file: {e}"))?;
 
+    let heap_mb = extension_host_heap_mb();
+    log::info!("extension host heap cap: {heap_mb} MB (SIDEX_EXT_HOST_HEAP_MB to override)");
+
     let mut child_cmd = Command::new(&runtime.path);
     child_cmd
-        .arg("--max-old-space-size=3072")
+        .arg(format!("--max-old-space-size={heap_mb}"))
         .arg(&server_js)
         .env("SIDEX_EXTENSIONS_DIR", &user_ext_dir)
         .env("SIDEX_BUILTIN_EXTENSIONS_DIR", &builtin_ext_dir)

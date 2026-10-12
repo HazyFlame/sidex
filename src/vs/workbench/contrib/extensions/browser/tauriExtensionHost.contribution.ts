@@ -222,16 +222,71 @@ class TauriExtensionHostContribution extends Disposable implements IWorkbenchCon
 		try {
 			const bootstrap = await bootstrapExtensionPlatform();
 			this._applyBootstrap(bootstrap);
-			this._connect(bootstrap.transport.endpoint);
+			this._connectPlatform(bootstrap);
 		} catch (error) {
 			this.logService.warn(`[ExtHost] platform bootstrap failed ${(error as Error)?.message ?? String(error)}`);
 		}
 	}
 
+	/**
+	 * The extension host only runs when there is something for it to run: language
+	 * ids, grammars, snippets and language configurations are read from the extension
+	 * manifests by the workbench itself, so a setup whose extensions are declarative
+	 * (typ. only the bundled language grammars) does not need the Node process at all.
+	 * The Tauri side reports `dormant` in that case and starts the host on demand -
+	 * `_ensurePlatformStarted()` - as soon as an extension with a Node entry point
+	 * shows up (installed by the user).
+	 */
+	private _connectPlatform(bootstrap: IExtensionPlatformBootstrap): boolean {
+		const endpoint = bootstrap.transport?.endpoint;
+		if (!endpoint) {
+			this._platformDormant = true;
+			this.logService.info(
+				'[ExtHost] extension host not started: no installed extension needs it. Language support still works; the host starts when an extension is installed.'
+			);
+			return false;
+		}
+
+		this._platformDormant = false;
+		this._connect(endpoint);
+		return true;
+	}
+
+	/**
+	 * Bootstraps the platform if it is not up yet. Returns `true` when a transport
+	 * is available afterwards. Safe to call repeatedly.
+	 */
+	private _ensurePlatformStarted(): Promise<boolean> {
+		if (!this._platformStartPromise) {
+			this._platformStartPromise = (async () => {
+				try {
+					const bootstrap = await bootstrapExtensionPlatform();
+					this._applyBootstrap(bootstrap);
+					return this._connectPlatform(bootstrap);
+				} catch (error) {
+					this.logService.warn(`[ExtHost] platform bootstrap failed ${(error as Error)?.message ?? String(error)}`);
+					return false;
+				} finally {
+					this._platformStartPromise = undefined;
+				}
+			})();
+		}
+		return this._platformStartPromise;
+	}
+
+	private _platformDormant = false;
+	private _platformStartPromise: Promise<boolean> | undefined;
+
 	private async _hotLoadInstalledExtension(result: InstallExtensionResult): Promise<void> {
 		const extId = result.identifier.id;
 		try {
 			const { invoke } = await import('@tauri-apps/api/core');
+
+			// The host may have been left unstarted because nothing could run before
+			// this install; now something can, so bring the platform up first.
+			if (this._platformDormant) {
+				await this._ensurePlatformStarted();
+			}
 
 			const source = result.source;
 			let installed: { id: string; path: string } | undefined;

@@ -17,6 +17,7 @@ import { joinPath } from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
 import { generateUuid } from '../../../../base/common/uuid.js';
 import { IMessagePassingProtocol } from '../../../../base/parts/ipc/common/ipc.js';
+import { workerBundleUrl } from '../../../../platform/webWorker/browser/workerBundleUrl.js';
 import { getNLSLanguage, getNLSMessages } from '../../../../nls.js';
 import { ILabelService } from '../../../../platform/label/common/label.js';
 import { ILayoutService } from '../../../../platform/layout/browser/layoutService.js';
@@ -360,5 +361,6 @@ export class WebWorkerExtensionHost extends Disposable implements IExtensionHost
 const extensionHostWorkerMainDescriptor = new WebWorkerDescriptor({
 	label: 'extensionHostWorkerMain',
 	esmModuleLocation: () => FileAccess.asBrowserUri('vs/workbench/api/worker/extensionHostWorkerMain.js'),
-	esmModuleLocationBundler: () => new URL('../../../api/worker/extensionHostWorkerMain.ts', import.meta.url),
+	esmModuleLocationBundler: () =>
+		workerBundleUrl(import.meta.url, '../../../api/worker/extensionHostWorkerMain.ts', '/workers/extensionHostWorker.js'),
 });

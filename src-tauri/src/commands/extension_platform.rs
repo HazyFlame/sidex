@@ -748,10 +748,28 @@ pub async fn extension_platform_bootstrap(
         .map(|p| p.to_string_lossy().to_string())
         .collect();
 
-    let port = supervisor.ensure_started(&app, &init_data_json, &search_paths)?;
-
-    let node = resolve_node_runtime(&app)?;
-
+    // The host is only useful when there is at least one Node extension that can
+    // activate: declarative contributions (languages, grammars, snippets) are read
+    // from the manifests by the workbench itself, so a setup without Node
+    // extensions does not need the host at all. The client re-bootstraps when an
+    // extension gets installed, which starts it then.
+    let dormant = descriptions.is_empty();
+    let (transport, node) = if dormant {
+        log::info!("[platform] no Node extension with main/browser found; extension host stays off");
+        (serde_json::Value::Null, serde_json::Value::Null)
+    } else {
+        let port = supervisor.ensure_started(&app, &init_data_json, &search_paths)?;
+        let node = resolve_node_runtime(&app)?;
+        (
+            serde_json::json!({ "kind": "websocket", "endpoint": format!("ws://127.0.0.1:{port}/") }),
+            serde_json::json!({
+                "path": node.path,
+                "version": node.version,
+                "source": "system",
+                "bundled": false,
+            }),
+        )
+    };
     let wasm_manifests: Vec<ExtensionManifest> = manifests
         .iter()
         .filter(|m| m.kind == ExtensionKind::Wasm && m.wasm_binary.is_some())
@@ -794,8 +812,9 @@ pub async fn extension_platform_bootstrap(
         .collect();
 
     Ok(serde_json::json!({
-        "transport": { "kind": "websocket", "endpoint": format!("ws://127.0.0.1:{port}/") },
-        "runtime": { "path": node.path, "version": node.version, "source": "system", "bundled": false },
+        "transport": transport,
+        "dormant": dormant,
+        "runtime": node,
         "paths": {
             "serverScript": dunce::simplified(&resolve_server_script(&app)).to_string_lossy(),
             "builtinExtensionsDir": dunce::simplified(&resolve_builtin_extensions_dir(&app)).to_string_lossy(),

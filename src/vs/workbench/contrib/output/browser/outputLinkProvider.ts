@@ -17,6 +17,7 @@ import { IWebWorkerService } from '../../../../platform/webWorker/browser/webWor
 import { IWebWorkerClient } from '../../../../base/common/worker/webWorker.js';
 import { WorkerTextModelSyncClient } from '../../../../editor/common/services/textModelSync/textModelSync.impl.js';
 import { FileAccess } from '../../../../base/common/network.js';
+import { workerBundleUrl } from '../../../../platform/webWorker/browser/workerBundleUrl.js';
 
 export class OutputLinkProvider extends Disposable {
 	private static readonly DISPOSE_WORKER_TIME = 3 * 60 * 1000; // dispose worker after 3 minutes of inactivity
@@ -111,7 +112,11 @@ class OutputLinkWorkerClient extends Disposable {
 			webWorkerService.createWorkerClient<OutputLinkComputer>(
 				new WebWorkerDescriptor({
 					esmModuleLocation: FileAccess.asBrowserUri('vs/workbench/contrib/output/common/outputLinkComputerMain.js'),
-					esmModuleLocationBundler: new URL('../common/outputLinkComputerMain.ts', import.meta.url),
+					esmModuleLocationBundler: workerBundleUrl(
+						import.meta.url,
+						'../common/outputLinkComputerMain.ts',
+						'/workers/outputLinkWorker.js'
+					),
 					label: 'OutputLinkDetectionWorker'
 				})
 			)

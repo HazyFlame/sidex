@@ -42,6 +42,20 @@ interface RustTextMatch {
 	match_length: number;
 }
 
+/**
+ * `IFileQuery`/`ITextQuery` carry globs as `{ pattern: boolean }` maps. Empty
+ * and blank entries must not be forwarded: a glob that cannot be parsed yields
+ * an empty globset in Rust, which matches nothing and silently hides every
+ * result.
+ */
+function globList(pattern: Record<string, boolean> | undefined): string[] {
+	return pattern
+		? Object.keys(pattern)
+				.map(p => p.trim())
+				.filter(p => p.length > 0)
+		: [];
+}
+
 class TauriSearchProvider extends Disposable implements ISearchResultProvider {
 	constructor(private readonly logService: ILogService) {
 		super();
@@ -72,8 +86,8 @@ class TauriSearchProvider extends Disposable implements ISearchResultProvider {
 						max_results: query.maxResults ?? 500,
 						case_sensitive: query.contentPattern.isCaseSensitive ?? false,
 						is_regex: query.contentPattern.isRegExp ?? false,
-						include: query.includePattern ? Object.keys(query.includePattern) : [],
-						exclude: query.excludePattern ? Object.keys(query.excludePattern) : []
+						include: globList(query.includePattern),
+						exclude: globList(query.excludePattern)
 					}
 				});
 
@@ -135,8 +149,8 @@ class TauriSearchProvider extends Disposable implements ISearchResultProvider {
 					pattern: query.filePattern ?? '',
 					options: {
 						max_results: query.maxResults ?? 500,
-						include: query.includePattern ? Object.keys(query.includePattern) : [],
-						exclude: query.excludePattern ? Object.keys(query.excludePattern) : []
+						include: globList(query.includePattern),
+						exclude: globList(query.excludePattern)
 					}
 				});
 

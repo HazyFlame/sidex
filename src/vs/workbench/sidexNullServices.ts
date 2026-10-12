@@ -57,12 +57,38 @@ class NullNotebookService implements INotebookService {
 registerSingleton(INotebookService, NullNotebookService, InstantiationType.Delayed);
 
 // --- INotebookEditorService ---
+// Must satisfy the full INotebookEditorService contract from
+// contrib/notebook/browser/services/notebookEditorService.ts: createDecorator()
+// caches identifiers by string id, so this class *is* the implementation the
+// workbench resolves. Notebook search (Ctrl+Shift+F -> NotebookSearchService)
+// calls retrieveAllExistingWidgets() unconditionally, and a TypeError there
+// kills text search before it ever reaches ISearchService.
 const INotebookEditorService = createDecorator<INotebookEditorService>('notebookEditorService');
 interface INotebookEditorService {
 	readonly _serviceBrand: undefined;
+	readonly onDidAddNotebookEditor: Event<any>;
+	readonly onDidRemoveNotebookEditor: Event<any>;
+	retrieveWidget(..._args: any[]): any;
+	retrieveExistingWidgetFromURI(..._args: any[]): any;
+	retrieveAllExistingWidgets(): any[];
+	listNotebookEditors(): readonly any[];
 }
 class NullNotebookEditorService implements INotebookEditorService {
 	declare readonly _serviceBrand: undefined;
+	readonly onDidAddNotebookEditor = Event.None;
+	readonly onDidRemoveNotebookEditor = Event.None;
+	retrieveWidget(): undefined {
+		return undefined;
+	}
+	retrieveExistingWidgetFromURI(): undefined {
+		return undefined;
+	}
+	retrieveAllExistingWidgets(): any[] {
+		return [];
+	}
+	listNotebookEditors(): readonly any[] {
+		return [];
+	}
 }
 registerSingleton(INotebookEditorService, NullNotebookEditorService, InstantiationType.Delayed);
 

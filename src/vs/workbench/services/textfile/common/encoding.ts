@@ -83,7 +83,20 @@ class DecoderStream implements IDecoderStream {
 				'@vscode/iconv-lite-umd',
 				'lib/iconv-lite-umd.js'
 			);
-			decoder = iconv.getDecoder(toNodeEncoding(encoding));
+			if (iconv) {
+				decoder = iconv.getDecoder(toNodeEncoding(encoding));
+			} else {
+				// The iconv module may be unavailable when the web server does not ship
+				// `node_modules`. Fall back to the native `TextDecoder` for the encodings
+				// it supports so that reading BOM/UTF-16 files keeps working instead of
+				// throwing a `TypeError`.
+				decoder = createNativeTextDecoderStream(encoding);
+				if (!decoder) {
+					throw new Error(
+						`Cannot decode using encoding '${encoding}': '@vscode/iconv-lite-umd' is not available.`
+					);
+				}
+			}
 		} else {
 			const utf8TextDecoder = new TextDecoder();
 			decoder = {
@@ -114,6 +127,49 @@ class DecoderStream implements IDecoderStream {
 	end(): string | undefined {
 		return this.iconvLiteDecoder.end();
 	}
+}
+
+/**
+ * Creates a decoder stream backed by the native `TextDecoder` for the encodings
+ * it supports. Returns `undefined` for any other encoding so that callers can
+ * report a proper error instead of failing deep inside a decoder call.
+ */
+function createNativeTextDecoderStream(encoding: string): IDecoderStream | undefined {
+	let label: string | undefined;
+	switch (encoding) {
+		case UTF8_with_bom:
+			label = UTF8; // TextDecoder strips a leading BOM for UTF-8
+			break;
+		case UTF16le:
+			label = UTF16le;
+			break;
+		case UTF16be:
+			label = UTF16be;
+			break;
+		default:
+			label = undefined;
+			break;
+	}
+
+	if (!label) {
+		return undefined;
+	}
+
+	let textDecoder: TextDecoder;
+	try {
+		textDecoder = new TextDecoder(label);
+	} catch {
+		return undefined; // platform does not support the encoding
+	}
+
+	return {
+		write(buffer: Uint8Array): string {
+			return textDecoder.decode(buffer, { stream: true });
+		},
+		end(): string | undefined {
+			return textDecoder.decode();
+		}
+	};
 }
 
 export function toDecodeStream(
@@ -225,6 +281,46 @@ export function toDecodeStream(
 	});
 }
 
+/**
+ * Creates an encoder for the encodings the native `TextEncoder` supports
+ * (UTF-8 only). Throws for any other encoding so the caller reports a proper
+ * error instead of failing deep inside an encoder call.
+ */
+function createNativeTextEncoder(
+	encoding: string,
+	options?: { addBOM?: boolean }
+): { write(chunk: string): Uint8Array; end(): Uint8Array | undefined } {
+	if (encoding !== UTF8 && encoding !== UTF8_with_bom) {
+		throw new Error(`Cannot encode using encoding '${encoding}': '@vscode/iconv-lite-umd' is not available.`);
+	}
+
+	const textEncoder = new TextEncoder();
+	let bomWritten = false;
+
+	return {
+		write(chunk: string): Uint8Array {
+			const bytes = textEncoder.encode(chunk);
+			if (bomWritten) {
+				return bytes;
+			}
+
+			bomWritten = true;
+			if (!options?.addBOM) {
+				return bytes;
+			}
+
+			const result = new Uint8Array(UTF8_BOM.length + bytes.length);
+			result.set(UTF8_BOM, 0);
+			result.set(bytes, UTF8_BOM.length);
+			return result;
+		},
+
+		end(): Uint8Array | undefined {
+			return undefined;
+		}
+	};
+}
+
 export async function toEncodeReadable(
 	readable: Readable<string>,
 	encoding: string,
@@ -234,7 +330,10 @@ export async function toEncodeReadable(
 		'@vscode/iconv-lite-umd',
 		'lib/iconv-lite-umd.js'
 	);
-	const encoder = iconv.getEncoder(toNodeEncoding(encoding), options);
+	// When the iconv module is not available (e.g. a web server that does not ship
+	// `node_modules`), fall back to the native UTF-8 encoder instead of failing with
+	// a `TypeError`. Unsupported encodings report a proper error.
+	const encoder = iconv ? iconv.getEncoder(toNodeEncoding(encoding), options) : createNativeTextEncoder(encoding, options);
 
 	let bytesWritten = false;
 	let done = false;
@@ -286,6 +385,10 @@ export async function encodingExists(encoding: string): Promise<boolean> {
 		'@vscode/iconv-lite-umd',
 		'lib/iconv-lite-umd.js'
 	);
+
+	if (!iconv) {
+		return true; // iconv-lite-umd unavailable (Tauri), assume encoding exists
+	}
 
 	return iconv.encodingExists(toNodeEncoding(encoding));
 }
@@ -345,6 +448,9 @@ const IGNORE_ENCODINGS = ['ascii', 'utf-16', 'utf-32'];
  */
 async function guessEncodingByBuffer(buffer: VSBuffer, candidateGuessEncodings?: string[]): Promise<string | null> {
 	const jschardet = await importAMDNodeModule<typeof import('jschardet')>('jschardet', 'dist/jschardet.min.js');
+	if (!jschardet) {
+		return null; // jschardet unavailable (web server that does not ship `node_modules`), skip guessing
+	}
 
 	// ensure to limit buffer for guessing due to https://github.com/aadsm/jschardet/issues/53
 	const limitedBuffer = buffer.slice(0, AUTO_ENCODING_GUESS_MAX_BYTES);

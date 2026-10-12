@@ -319,9 +319,9 @@ export class IndexingSection implements SettingsSection {
 
 		this._addToggleRow(card,
 			'Auto-index new folders',
-			'Automatically re-index when files change',
+			'Build and refresh the local search index when a folder opens (costs extra memory on large folders)',
 			'sidex.indexing.autoIndex',
-			true
+			false
 		);
 
 		this._addToggleRow(card,

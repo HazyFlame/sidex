@@ -1864,27 +1864,66 @@ ${prompt}`,
 		if (!wsPath || wsPath === '.' || wsPath === '/') {
 			return;
 		}
-		this._contextIndexing = true;
 
-		this._localExecutor.execute({
-			type: 'tool_request',
-			tool_call_id: `ctx-index-${Date.now()}`,
-			name: 'context_index',
-			arguments: '{}',
-		}).then(result => {
-			if (!result.error) {
-				this._contextIndexed = true;
-				this._startFileWatcher();
-			} else {
-				// Background feature: log, don't alarm the user with a popup.
-				// context_search degrades gracefully to grep when unavailable.
-				console.warn('[sidex-index] local index unavailable:', result.error);
+		// The agent context index also lives in this process (chunks + code graph +
+		// a recursive watcher, see `crates/sidex-agent/src/tools/context.rs`), so it
+		// is behind the same "Auto-index new folders" switch as the BM25 index.
+		// The agent can still build it on demand by calling `context_index` itself.
+		void this._isAutoIndexEnabled().then(autoIndexEnabled => {
+			if (!autoIndexEnabled || this._contextIndexed || this._contextIndexing) {
+				if (!autoIndexEnabled) {
+					console.info('[sidex-index] auto-index is off — skipping context index for', wsPath);
+				}
+				return;
 			}
-		}).catch(err => {
-			console.warn('[sidex-index] local index unavailable:', err);
-		}).finally(() => {
-			this._contextIndexing = false;
+			this._contextIndexing = true;
+
+			this._localExecutor.execute({
+				type: 'tool_request',
+				tool_call_id: `ctx-index-${Date.now()}`,
+				name: 'context_index',
+				arguments: '{}',
+			}).then(result => {
+				if (!result.error) {
+					this._contextIndexed = true;
+					this._startFileWatcher();
+				} else {
+					// Background feature: log, don't alarm the user with a popup.
+					// context_search degrades gracefully to grep when unavailable.
+					console.warn('[sidex-index] local index unavailable:', result.error);
+				}
+			}).catch(err => {
+				console.warn('[sidex-index] local index unavailable:', err);
+			}).finally(() => {
+				this._contextIndexing = false;
+			});
 		});
+	}
+
+	/**
+	 * `sidex.indexing.autoIndex` ("Auto-index new folders" in Settings).
+	 *
+	 * Building the local BM25 index walks the whole workspace and keeps every
+	 * word location in memory (`Vec<WordLocation>` per word, see
+	 * `src-tauri/src/commands/index.rs`), which costs hundreds of MB on a large
+	 * repo. Indexing is therefore opt-in: only an explicit `true` enables it, and
+	 * the switch is read before every automatic build instead of being cached so
+	 * toggling it takes effect without a restart. The index can always be built
+	 * on demand from Settings -> SideX indexing ("Build index").
+	 */
+	private async _isAutoIndexEnabled(): Promise<boolean> {
+		const invoke = SidexChatService._getTauriInvoke();
+		if (!invoke) {
+			return false;
+		}
+		try {
+			const raw = await invoke('settings_get', { section: 'sidex.indexing.autoIndex' });
+			// The settings UI stores the toggle as a JSON string, so accept both.
+			return raw === true || raw === 'true';
+		} catch {
+			// Setting store unavailable: keep the expensive build off.
+			return false;
+		}
 	}
 
 	private _triggerAutoIndex(): void {
@@ -1892,31 +1931,26 @@ ${prompt}`,
 		const wsPath = this.workspacePath;
 		if (!invoke || !wsPath || wsPath === '.') { return; }
 
-		// autoIndex defaults ON (like Cursor). The local BM25 index always
-		// builds — it powers the files count and local search; the CLOUD
-		// upload additionally requires sign-in and the setting not being off.
-		invoke('settings_get', { section: 'sidex.indexing.autoIndex' }).then(raw => {
-			const autoIndexOff = raw === false || raw === 'false';
+		void this._isAutoIndexEnabled().then(autoIndexEnabled => {
+			if (!autoIndexEnabled) {
+				console.info('[sidex-index] auto-index is off — skipping automatic index build for', wsPath);
+				return;
+			}
 
 			window.dispatchEvent(new CustomEvent('sidex-indexing-status', {
 				detail: { status: 'indexing', path: wsPath }
 			}));
 
 			invoke('index_build', { root: wsPath }).then(() => {
-				if (!autoIndexOff) {
-					// Keep the index fresh: periodic incremental
-					// re-sync (Merkle diff makes unchanged syncs ~free).
-					this._startReindexInterval();
-				}
+				// Keep the index fresh: periodic incremental
+				// re-sync (Merkle diff makes unchanged syncs ~free).
+				this._startReindexInterval();
 			}).catch(err => {
 				console.error('[sidex-index] index build failed:', err);
 				window.dispatchEvent(new CustomEvent('sidex-indexing-status', {
 					detail: { status: 'error', path: wsPath, error: err }
 				}));
 			});
-		}).catch(() => {
-			// Setting store unavailable — still build the local index.
-			invoke('index_build', { root: wsPath }).catch(() => { /* logged in Rust */ });
 		});
 	}
 
@@ -1939,8 +1973,13 @@ ${prompt}`,
 		const invoke = SidexChatService._getTauriInvoke();
 		const wsPath = this.workspacePath;
 		if (!invoke || !wsPath || wsPath === '.') { return; }
-		invoke('index_build', { root: wsPath }).catch(() => {
-			// Non-fatal: the next interval/edit will retry.
+		void this._isAutoIndexEnabled().then(autoIndexEnabled => {
+			if (!autoIndexEnabled) {
+				return; // re-indexing is part of "Auto-index new folders"
+			}
+			invoke('index_build', { root: wsPath }).catch(() => {
+				// Non-fatal: the next interval/edit will retry.
+			});
 		});
 	}
 

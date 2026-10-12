@@ -1,6 +1,7 @@
 import { readdirSync, readFileSync, writeFileSync, existsSync, statSync } from 'fs';
 import { join, resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { applyBuiltinThemeOverlay } from './apply-builtin-themes.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -25,6 +26,11 @@ function writeBuiltinExtensions(descriptors) {
   writeFileSync(jsOutputPath, jsContent);
   console.log(`Wrote public/builtin-extensions.js (${(jsContent.length / 1024).toFixed(1)} KB)`);
 }
+
+// Themes maintained in this repository (builtin-themes/) are copied into the
+// generated extensions/ folder and registered in its manifests first, so they
+// end up in the descriptors below.
+applyBuiltinThemeOverlay();
 
 if (!existsSync(extensionsDir)) {
   console.warn(`Extensions directory not found: ${extensionsDir}`);

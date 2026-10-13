@@ -4,7 +4,7 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as nls from '../../../../nls.js';
-import { isWindows, OperatingSystem, OS } from '../../../../base/common/platform.js';
+import { isWindows, isMacintosh, OperatingSystem, OS } from '../../../../base/common/platform.js';
 import { extname, basename, isAbsolute } from '../../../../base/common/path.js';
 import * as resources from '../../../../base/common/resources.js';
 import { URI } from '../../../../base/common/uri.js';
@@ -56,11 +56,14 @@ import { IViewsService } from '../../../services/views/common/viewsService.js';
 import { trim, rtrim } from '../../../../base/common/strings.js';
 import { IUriIdentityService } from '../../../../platform/uriIdentity/common/uriIdentity.js';
 import { ResourceFileEdit } from '../../../../editor/browser/services/bulkEditService.js';
-import { IExplorerService } from './files.js';
+import { IExplorerService, getMultiSelectedResources } from './files.js';
 import { BrowserFileUpload, FileDownload } from './fileImportExport.js';
 import { IPaneCompositePartService } from '../../../services/panecomposite/browser/panecomposite.js';
 import { IRemoteAgentService } from '../../../services/remote/common/remoteAgentService.js';
 import { IPathService } from '../../../services/path/common/pathService.js';
+import { IEditorGroupsService } from '../../../services/editor/common/editorGroupsService.js';
+import { IListService } from '../../../../platform/list/browser/listService.js';
+import { EditorContextKeys } from '../../../../editor/common/editorContextKeys.js';
 import { Action2 } from '../../../../platform/actions/common/actions.js';
 import {
 	ActiveEditorCanToggleReadonlyContext,
@@ -87,6 +90,15 @@ export const DOWNLOAD_COMMAND_ID = 'explorer.download';
 export const DOWNLOAD_LABEL = nls.localize('download', 'Download...');
 export const UPLOAD_COMMAND_ID = 'explorer.upload';
 export const UPLOAD_LABEL = nls.localize('upload', 'Upload...');
+export const REVEAL_IN_OS_COMMAND_ID = 'revealFileInOS';
+// Windows reveals in Explorer, macOS in the Finder; other desktops only have a
+// generic file manager to open the containing folder in.
+export const REVEAL_IN_OS_TITLE: ILocalizedString = isWindows
+	? nls.localize2('revealInWindows', 'Reveal in File Explorer')
+	: isMacintosh
+		? nls.localize2('revealInMac', 'Reveal in Finder')
+		: nls.localize2('openContainer', 'Open Containing Folder');
+export const REVEAL_IN_OS_LABEL = REVEAL_IN_OS_TITLE.value;
 const CONFIRM_DELETE_SETTING_KEY = 'explorer.confirmDelete';
 const MAX_UNDO_FILE_SIZE = 5000000; // 5mb
 
@@ -845,6 +857,97 @@ export class ShowActiveFileInExplorer extends Action2 {
 		if (resource) {
 			commandService.executeCommand(REVEAL_IN_EXPLORER_COMMAND_ID, resource);
 		}
+	}
+}
+
+/**
+ * Reveals file system resources in the file manager of the operating system
+ * (Windows Explorer, Finder, ...).
+ *
+ * The web workbench has no native host service, so the workbench goes through
+ * the native bridge to the Rust `show_item_in_folder` command. Note that
+ * `window.__TAURI__` is *not* exposed - `withGlobalTauri` is off in
+ * `src-tauri/tauri.conf.json` - so the Tauri API package has to be used, which
+ * talks to `window.__TAURI_INTERNALS__`. It is imported on demand so that the
+ * native API does not end up in the startup bundle.
+ */
+export async function revealResourcesInOS(
+	resources: Array<URI>,
+	notificationService: INotificationService
+): Promise<void> {
+	const { invoke, isTauri } = await import('@tauri-apps/api/core');
+	if (!isTauri()) {
+		notificationService.warn(
+			nls.localize(
+				'revealInOS.notDesktop',
+				'Revealing files in the file manager is only available in the SideX desktop app.'
+			)
+		);
+		return;
+	}
+
+	const localResources = resources.filter(resource => resource.scheme === Schemas.file);
+	if (!localResources.length) {
+		notificationService.warn(
+			nls.localize('revealInOS.notLocal', 'Unable to reveal this item because it is not a local file.')
+		);
+		return;
+	}
+
+	for (const resource of localResources) {
+		try {
+			await invoke('show_item_in_folder', { path: resource.fsPath });
+		} catch (error) {
+			notificationService.error(
+				nls.localize(
+					'revealInOS.error',
+					'Unable to reveal {0} in the file manager: {1}',
+					basename(resource.fsPath),
+					getErrorMessage(error)
+				)
+			);
+		}
+	}
+}
+
+export class RevealInOSAction extends Action2 {
+	static readonly ID = REVEAL_IN_OS_COMMAND_ID;
+	static readonly TITLE = REVEAL_IN_OS_TITLE;
+
+	constructor() {
+		super({
+			id: RevealInOSAction.ID,
+			title: RevealInOSAction.TITLE,
+			f1: true,
+			category: Categories.File,
+			// Same binding as VS Code: it only applies while the editor does not
+			// have focus, so it does not fight with editor keybindings.
+			keybinding: {
+				weight: KeybindingWeight.WorkbenchContrib,
+				when: EditorContextKeys.focus.toNegated(),
+				primary: KeyMod.CtrlCmd | KeyMod.Alt | KeyCode.KeyR,
+				win: { primary: KeyMod.Shift | KeyMod.Alt | KeyCode.KeyR }
+			},
+			metadata: {
+				description: nls.localize2(
+					'revealInOSMetadata',
+					'Reveals the file in the file manager of the operating system.'
+				)
+			}
+		});
+	}
+
+	override async run(accessor: ServicesAccessor, resource?: URI | object): Promise<void> {
+		const editorService = accessor.get(IEditorService);
+		const editorGroupService = accessor.get(IEditorGroupsService);
+		const explorerService = accessor.get(IExplorerService);
+		const listService = accessor.get(IListService);
+		const notificationService = accessor.get(INotificationService);
+
+		await revealResourcesInOS(
+			getMultiSelectedResources(resource, listService, editorService, editorGroupService, explorerService),
+			notificationService
+		);
 	}
 }
 

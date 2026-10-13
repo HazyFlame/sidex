@@ -791,6 +791,7 @@ pub fn run() {
             commands::get_env,
             commands::get_all_env,
             commands::get_user_data_dir,
+            commands::show_item_in_folder,
             commands::storage_get,
             commands::storage_set,
             commands::storage_delete,

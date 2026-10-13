@@ -1,6 +1,7 @@
 use serde::Serialize;
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 use tauri::Manager;
 
 #[derive(Debug, Serialize)]
@@ -96,4 +97,110 @@ pub(crate) fn resolve_user_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, S
         .app_data_dir()
         .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
     Ok(dir.join("UserData"))
+}
+
+/// The program and arguments that reveal `target` in the file manager.
+///
+/// Windows selects the item in Explorer, macOS in Finder. Linux desktops have
+/// no portable way to select a single item, so the containing folder is opened
+/// instead.
+#[cfg(target_os = "windows")]
+fn reveal_command(target: &Path) -> (&'static str, Vec<String>) {
+    // `explorer` expects `/select,<path>` as a single token, and the path keeps
+    // its quotes because the argument is appended to the command line verbatim.
+    (
+        "explorer",
+        vec![format!("/select,\"{}\"", target.display())],
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn reveal_command(target: &Path) -> (&'static str, Vec<String>) {
+    ("open", vec!["-R".to_string(), target.display().to_string()])
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn reveal_command(target: &Path) -> (&'static str, Vec<String>) {
+    let folder = if target.is_dir() {
+        target
+    } else {
+        target.parent().unwrap_or(target)
+    };
+    ("xdg-open", vec![folder.display().to_string()])
+}
+
+/// Reveals `path` in the file manager of the operating system, selecting the
+/// item when the platform supports it.
+///
+/// Backs the workbench `revealFileInOS` command ("Reveal in File Explorer",
+/// "Reveal in Finder"). The path is handed to the platform handler as a single
+/// argument (no shell is involved) and has to exist, so it cannot be used to
+/// run something else.
+#[allow(clippy::needless_pass_by_value)]
+#[tauri::command]
+pub fn show_item_in_folder(path: String) -> Result<(), String> {
+    let target = PathBuf::from(&path);
+    if !target.exists() {
+        return Err(format!("path does not exist: {path}"));
+    }
+
+    let (program, args) = reveal_command(&target);
+    let mut command = Command::new(program);
+
+    #[cfg(target_os = "windows")]
+    {
+        // Rust would escape the quotes a second time, but `explorer` needs them
+        // exactly as they appear in `explorer /select,"<path>"`.
+        use std::os::windows::process::CommandExt;
+        for arg in &args {
+            command.raw_arg(arg);
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    command.args(&args);
+
+    command
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("failed to start {program}: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn missing_path_is_reported_instead_of_spawning() {
+        let result = show_item_in_folder("sidex/reveal/does/not/exist".to_string());
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("does not exist"));
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_selects_the_item_with_explorer() {
+        let (program, args) = reveal_command(Path::new(r"C:\work\my file.txt"));
+        assert_eq!(program, "explorer");
+        assert_eq!(
+            args,
+            vec![format!("/select,\"{}\"", r"C:\work\my file.txt")]
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn macos_reveals_the_item_with_finder() {
+        let (program, args) = reveal_command(Path::new("/work/my file.txt"));
+        assert_eq!(program, "open");
+        assert_eq!(args, vec!["-R", "/work/my file.txt"]);
+    }
+
+    #[test]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
+    fn linux_opens_the_containing_folder() {
+        let (program, args) = reveal_command(Path::new("/work/my file.txt"));
+        assert_eq!(program, "xdg-open");
+        assert_eq!(args, vec!["/work"]);
+    }
 }

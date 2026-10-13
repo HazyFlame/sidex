@@ -35,7 +35,10 @@ import {
 	SetActiveEditorReadonlyInSession,
 	SetActiveEditorWriteableInSession,
 	ToggleActiveEditorReadonlyInSession,
-	ResetActiveEditorReadonlyInSession
+	ResetActiveEditorReadonlyInSession,
+	RevealInOSAction,
+	REVEAL_IN_OS_COMMAND_ID,
+	REVEAL_IN_OS_LABEL
 } from './fileActions.js';
 import {
 	revertLocalChangesCommand,
@@ -127,6 +130,7 @@ import { Categories } from '../../../../platform/action/common/actionCommonCateg
 registerAction2(GlobalCompareResourcesAction);
 registerAction2(FocusFilesExplorer);
 registerAction2(ShowActiveFileInExplorer);
+registerAction2(RevealInOSAction);
 registerAction2(CompareWithClipboardAction);
 registerAction2(CompareNewUntitledTextFilesAction);
 registerAction2(ToggleAutoSaveAction);
@@ -261,6 +265,11 @@ export const revealInSideBarCommand = {
 	title: nls.localize('revealInSideBar', 'Reveal in Explorer View')
 };
 
+export const revealInOSCommand = {
+	id: REVEAL_IN_OS_COMMAND_ID,
+	title: REVEAL_IN_OS_LABEL
+};
+
 // Editor Title Context Menu
 appendEditorTitleContextMenuItem(
 	COPY_PATH_COMMAND_ID,
@@ -283,6 +292,14 @@ appendEditorTitleContextMenuItem(
 	'2_files',
 	false,
 	1
+);
+appendEditorTitleContextMenuItem(
+	revealInOSCommand.id,
+	revealInOSCommand.title,
+	ResourceContextKey.IsFileSystemResource,
+	'2_files',
+	true,
+	2
 );
 
 export function appendEditorTitleContextMenuItem(
@@ -456,6 +473,13 @@ MenuRegistry.appendMenuItem(MenuId.OpenEditorsContext, {
 	order: 10,
 	command: openToSideCommand,
 	when: isFileOrUntitledResourceContextKey
+});
+
+MenuRegistry.appendMenuItem(MenuId.OpenEditorsContext, {
+	group: 'navigation',
+	order: 20,
+	command: revealInOSCommand,
+	when: ResourceContextKey.IsFileSystemResource
 });
 
 MenuRegistry.appendMenuItem(MenuId.OpenEditorsContext, {
@@ -691,6 +715,13 @@ MenuRegistry.appendMenuItem(MenuId.ExplorerContext, {
 		title: nls.localize('explorerOpenWith', 'Open With...')
 	},
 	when: ContextKeyExpr.and(ExplorerFolderContext.toNegated(), ExplorerResourceAvailableEditorIdsContext)
+});
+
+MenuRegistry.appendMenuItem(MenuId.ExplorerContext, {
+	group: 'navigation',
+	order: 21,
+	command: revealInOSCommand,
+	when: ResourceContextKey.IsFileSystemResource
 });
 
 MenuRegistry.appendMenuItem(MenuId.ExplorerContext, {
